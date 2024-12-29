@@ -1,0 +1,1 @@
+{"version":3,"file":"mapping.d.ts","sourceRoot":"","sources":["../../src/ds-rpc/mapping.ts"],"names":[],"mappings":"AAEA,OAAO,EACH,KAAK,EAGR,MAAM,wBAAwB,CAAA;AAG/B,OAAO,EAAC,cAAc,EAAC,MAAM,cAAc,CAAA;AAC3C,OAAO,EAAC,KAAK,IAAI,QAAQ,EAAC,MAAM,eAAe,CAAA;AAI/C,wBAAgB,QAAQ,CAAC,QAAQ,EAAE,QAAQ,EAAE,GAAG,EAAE,cAAc,GAAG,KAAK,CASvE"}
