@@ -1,5 +1,6 @@
 {
   "name": "@subsquid/bch-processor",
+  "type": "module",
   "version": "1.0.0",
   "description": "Data fetcher and mappings executor for BitcoinCash chain",
   "license": "GPL-3.0-or-later",

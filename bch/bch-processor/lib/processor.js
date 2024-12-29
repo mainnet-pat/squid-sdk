@@ -1,4 +1,3 @@
-"use strict";
 var __decorate = (this && this.__decorate) || function (decorators, target, key, desc) {
     var c = arguments.length, r = c < 3 ? target : desc === null ? desc = Object.getOwnPropertyDescriptor(target, key) : desc, d;
     if (typeof Reflect === "object" && typeof Reflect.decorate === "function") r = Reflect.decorate(decorators, target, key, desc);
@@ -8,32 +7,33 @@ var __decorate = (this && this.__decorate) || function (decorators, target, key,
 var __metadata = (this && this.__metadata) || function (k, v) {
     if (typeof Reflect === "object" && typeof Reflect.metadata === "function") return Reflect.metadata(k, v);
 };
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.BchBatchProcessor = void 0;
-const http_client_1 = require("@subsquid/http-client");
-const logger_1 = require("@subsquid/logger");
-const rpc_client_1 = require("@subsquid/rpc-client");
-const util_internal_1 = require("@subsquid/util-internal");
-const util_internal_archive_client_1 = require("@subsquid/util-internal-archive-client");
-const util_internal_processor_tools_1 = require("@subsquid/util-internal-processor-tools");
-const util_internal_range_1 = require("@subsquid/util-internal-range");
-const util_internal_validation_1 = require("@subsquid/util-internal-validation");
-const assert_1 = __importDefault(require("assert"));
-const client_js_1 = require("./ds-archive/client.js");
-const client_js_2 = require("./ds-rpc/client.js");
-const data_js_1 = require("./interfaces/data.js");
-const selection_js_1 = require("./mapping/selection.js");
+import { HttpAgent, HttpClient } from '@subsquid/http-client';
+import { createLogger, Logger } from '@subsquid/logger';
+import { RpcClient } from '@subsquid/rpc-client';
+import { assertNotNull, def, runProgram } from '@subsquid/util-internal';
+import { ArchiveClient } from '@subsquid/util-internal-archive-client';
+import { getOrGenerateSquidId, PrometheusServer, Runner } from '@subsquid/util-internal-processor-tools';
+import { applyRangeBound, mergeRangeRequests } from '@subsquid/util-internal-range';
+import { cast } from '@subsquid/util-internal-validation';
+import assert from 'assert';
+import { BchArchive } from './ds-archive/client.js';
+import { BchRpcDataSource } from './ds-rpc/client.js';
+import { DEFAULT_FIELDS } from './interfaces/data.js';
+import { getFieldSelectionValidator } from './mapping/selection.js';
 /**
  * Provides methods to configure and launch data processing.
  */
-class BchBatchProcessor {
-    constructor() {
-        this.requests = [];
-        this.running = false;
-    }
+export class BchBatchProcessor {
+    requests = [];
+    blockRange;
+    fields;
+    finalityConfirmation;
+    archive;
+    rpcIngestSettings;
+    rpcEndpoint;
+    p2pEndpoint; // endpoint in format "ip:port"
+    running = false;
+    hotDataSource;
     /**
      * @deprecated Use {@link .setGateway()}
      */
@@ -135,7 +135,7 @@ class BchBatchProcessor {
      * @deprecated Use {@link .setRpcDataIngestionSettings()} instead
      */
     setChainPollInterval(ms) {
-        (0, assert_1.default)(ms >= 0);
+        assert(ms >= 0);
         this.assertNotRunning();
         this.rpcIngestSettings = { ...this.rpcIngestSettings, headPollInterval: ms };
         return this;
@@ -163,8 +163,8 @@ class BchBatchProcessor {
      */
     setFields(fields) {
         this.assertNotRunning();
-        let validator = (0, selection_js_1.getFieldSelectionValidator)();
-        this.fields = (0, util_internal_validation_1.cast)(validator, fields);
+        let validator = getFieldSelectionValidator();
+        this.fields = cast(validator, fields);
         if (this.fields?.transaction?.sourceOutputs) {
             this.add({ sourceOutputs: true }, { from: this.requests.sort((a, b) => a.range.from - b.range.from)[0].range.from });
         }
@@ -231,23 +231,23 @@ class BchBatchProcessor {
         }
     }
     getLogger() {
-        return (0, logger_1.createLogger)('sqd:processor');
+        return createLogger('sqd:processor');
     }
     getSquidId() {
-        return (0, util_internal_processor_tools_1.getOrGenerateSquidId)();
+        return getOrGenerateSquidId();
     }
     getPrometheusServer() {
-        return new util_internal_processor_tools_1.PrometheusServer();
+        return new PrometheusServer();
     }
     getChainRpcClient() {
         if (this.rpcEndpoint == null) {
             throw new Error(`use .setRpcEndpoint() to specify chain RPC endpoint`);
         }
-        let client = new rpc_client_1.RpcClient({
+        let client = new RpcClient({
             url: this.rpcEndpoint.url,
             headers: this.rpcEndpoint.headers,
             maxBatchCallSize: this.rpcEndpoint.maxBatchCallSize ?? 25,
-            requestTimeout: this.rpcEndpoint.requestTimeout ?? 10000,
+            requestTimeout: this.rpcEndpoint.requestTimeout ?? 10_000,
             capacity: this.rpcEndpoint.capacity ?? 2,
             rateLimit: this.rpcEndpoint.rateLimit,
             retryAttempts: this.rpcEndpoint.retryAttempts ?? Number.MAX_SAFE_INTEGER,
@@ -269,7 +269,7 @@ class BchBatchProcessor {
             throw new Error(`use .setFinalityConfirmation() to specify number of children required to confirm block's finality`);
         }
         if (!this.hotDataSource) {
-            this.hotDataSource = new client_js_2.BchRpcDataSource({
+            this.hotDataSource = new BchRpcDataSource({
                 rpc: this.getChainRpcClient(),
                 p2pEndpoint: this.p2pEndpoint,
                 finalityConfirmation: this.finalityConfirmation,
@@ -282,18 +282,18 @@ class BchBatchProcessor {
         return this.hotDataSource;
     }
     getArchiveDataSource() {
-        let archive = (0, util_internal_1.assertNotNull)(this.archive);
+        let archive = assertNotNull(this.archive);
         let log = this.getLogger().child('archive');
-        let http = new http_client_1.HttpClient({
+        let http = new HttpClient({
             headers: {
                 'x-squid-id': this.getSquidId()
             },
-            agent: new http_client_1.HttpAgent({
+            agent: new HttpAgent({
                 keepAlive: true
             }),
             log
         });
-        return new client_js_1.BchArchive(new util_internal_archive_client_1.ArchiveClient({
+        return new BchArchive(new ArchiveClient({
             http,
             url: archive.url,
             queryTimeout: archive.requestTimeout,
@@ -301,7 +301,7 @@ class BchBatchProcessor {
         }));
     }
     getBatchRequests() {
-        let requests = (0, util_internal_range_1.mergeRangeRequests)(this.requests, function merge(a, b) {
+        let requests = mergeRangeRequests(this.requests, function merge(a, b) {
             let res = {};
             if (a.includeAllBlocks || b.includeAllBlocks) {
                 res.includeAllBlocks = true;
@@ -316,7 +316,7 @@ class BchBatchProcessor {
         for (let req of requests) {
             req.request.fields = fields;
         }
-        return (0, util_internal_range_1.applyRangeBound)(requests, this.blockRange);
+        return applyRangeBound(requests, this.blockRange);
     }
     /**
      * Run data processing.
@@ -334,7 +334,7 @@ class BchBatchProcessor {
         this.assertNotRunning();
         this.running = true;
         let log = this.getLogger();
-        (0, util_internal_1.runProgram)(async () => {
+        runProgram(async () => {
             let chain = this.getChain();
             let mappingLog = log.child('mapping');
             if (this.archive == null && this.rpcEndpoint == null) {
@@ -344,7 +344,7 @@ class BchBatchProcessor {
             if (this.archive == null && this.rpcIngestSettings?.disabled) {
                 throw new Error('Subsquid Archive is required when RPC data ingestion is disabled');
             }
-            return new util_internal_processor_tools_1.Runner({
+            return new Runner({
                 database,
                 requests: this.getBatchRequests(),
                 archive: this.archive ? this.getArchiveDataSource() : undefined,
@@ -369,51 +369,50 @@ class BchBatchProcessor {
         }, err => log.fatal(err));
     }
 }
-exports.BchBatchProcessor = BchBatchProcessor;
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
-    __metadata("design:returntype", logger_1.Logger)
+    __metadata("design:returntype", Logger)
 ], BchBatchProcessor.prototype, "getLogger", null);
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", String)
 ], BchBatchProcessor.prototype, "getSquidId", null);
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
-    __metadata("design:returntype", util_internal_processor_tools_1.PrometheusServer)
+    __metadata("design:returntype", PrometheusServer)
 ], BchBatchProcessor.prototype, "getPrometheusServer", null);
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
-    __metadata("design:returntype", rpc_client_1.RpcClient)
+    __metadata("design:returntype", RpcClient)
 ], BchBatchProcessor.prototype, "getChainRpcClient", null);
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", Object)
 ], BchBatchProcessor.prototype, "getChain", null);
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
-    __metadata("design:returntype", client_js_2.BchRpcDataSource)
+    __metadata("design:returntype", BchRpcDataSource)
 ], BchBatchProcessor.prototype, "getHotDataSource", null);
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
-    __metadata("design:returntype", client_js_1.BchArchive)
+    __metadata("design:returntype", BchArchive)
 ], BchBatchProcessor.prototype, "getArchiveDataSource", null);
 __decorate([
-    util_internal_1.def,
+    def,
     __metadata("design:type", Function),
     __metadata("design:paramtypes", []),
     __metadata("design:returntype", Array)
@@ -440,8 +439,8 @@ function concatRequestLists(a, b) {
 }
 function addDefaultFields(fields) {
     return {
-        block: mergeDefaultFields(data_js_1.DEFAULT_FIELDS.block, fields?.block),
-        transaction: mergeDefaultFields(data_js_1.DEFAULT_FIELDS.transaction, fields?.transaction),
+        block: mergeDefaultFields(DEFAULT_FIELDS.block, fields?.block),
+        transaction: mergeDefaultFields(DEFAULT_FIELDS.transaction, fields?.transaction),
     };
 }
 function mergeDefaultFields(defaults, selection) {

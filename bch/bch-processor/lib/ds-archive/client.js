@@ -1,19 +1,14 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.BchArchive = void 0;
-const util_internal_1 = require("@subsquid/util-internal");
-const util_internal_ingest_tools_1 = require("@subsquid/util-internal-ingest-tools");
-const util_internal_range_1 = require("@subsquid/util-internal-range");
-const util_internal_validation_1 = require("@subsquid/util-internal-validation");
-const assert_1 = __importDefault(require("assert"));
-const entities_js_1 = require("../mapping/entities.js");
-const relations_js_1 = require("../mapping/relations.js");
-const schema_js_1 = require("./schema.js");
+import { addErrorContext } from '@subsquid/util-internal';
+import { archiveIngest } from '@subsquid/util-internal-ingest-tools';
+import { getRequestAt } from '@subsquid/util-internal-range';
+import { cast } from '@subsquid/util-internal-validation';
+import assert from 'assert';
+import { Block, BlockHeader, Transaction } from '../mapping/entities.js';
+import { setUpRelations } from '../mapping/relations.js';
+import { getBlockValidator } from './schema.js';
 const NO_FIELDS = {};
-class BchArchive {
+export class BchArchive {
+    client;
     constructor(client) {
         this.client = client;
     }
@@ -26,22 +21,22 @@ class BchArchive {
             toBlock: height,
             includeAllBlocks: true
         });
-        (0, assert_1.default)(blocks.length == 1);
+        assert(blocks.length == 1);
         return blocks[0].header.hash;
     }
     async *getFinalizedBlocks(requests, stopOnHead) {
-        for await (let batch of (0, util_internal_ingest_tools_1.archiveIngest)({
+        for await (let batch of archiveIngest({
             requests,
             client: this.client,
             stopOnHead
         })) {
-            let fields = (0, util_internal_range_1.getRequestAt)(requests, batch.blocks[0].header.number)?.fields || NO_FIELDS;
+            let fields = getRequestAt(requests, batch.blocks[0].header.number)?.fields || NO_FIELDS;
             let blocks = batch.blocks.map(b => {
                 try {
                     return this.mapBlock(b, fields);
                 }
                 catch (err) {
-                    throw (0, util_internal_1.addErrorContext)(err, {
+                    throw addErrorContext(err, {
                         blockHeight: b.header.number,
                         blockHash: b.header.hash
                     });
@@ -51,25 +46,24 @@ class BchArchive {
         }
     }
     mapBlock(rawBlock, fields) {
-        let validator = (0, schema_js_1.getBlockValidator)(fields);
-        let src = (0, util_internal_validation_1.cast)(validator, rawBlock);
+        let validator = getBlockValidator(fields);
+        let src = cast(validator, rawBlock);
         let { height, hash, parentHash, ...hdr } = src.header;
         if (hdr.timestamp) {
             hdr.timestamp = hdr.timestamp * 1000; // convert to ms
         }
-        let header = new entities_js_1.BlockHeader(height, hash, parentHash);
+        let header = new BlockHeader(height, hash, parentHash);
         Object.assign(header, hdr);
-        let block = new entities_js_1.Block(header);
+        let block = new Block(header);
         if (src.transactions) {
             for (let { ...props } of src.transactions) {
-                let tx = new entities_js_1.Transaction(header, 0);
+                let tx = new Transaction(header, 0);
                 Object.assign(tx, props);
                 block.transactions.push(tx);
             }
         }
-        (0, relations_js_1.setUpRelations)(block);
+        setUpRelations(block);
         return block;
     }
 }
-exports.BchArchive = BchArchive;
 //# sourceMappingURL=client.js.map

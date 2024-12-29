@@ -1,7 +1,4 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.toMappingRequest = toMappingRequest;
-function toMappingRequest(req) {
+export function toMappingRequest(req) {
     let txs = transactionsRequested(req);
     return {
         fields: req?.fields || {},

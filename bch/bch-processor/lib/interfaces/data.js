@@ -1,7 +1,4 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.DEFAULT_FIELDS = void 0;
-exports.DEFAULT_FIELDS = {
+export const DEFAULT_FIELDS = {
     block: {
         timestamp: true,
         size: true,

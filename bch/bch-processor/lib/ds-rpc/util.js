@@ -1,22 +1,13 @@
-"use strict";
-var __importDefault = (this && this.__importDefault) || function (mod) {
-    return (mod && mod.__esModule) ? mod : { "default": mod };
-};
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.Graph = void 0;
-exports.qty2Int = qty2Int;
-exports.toQty = toQty;
-exports.getTxHash = getTxHash;
-const assert_1 = __importDefault(require("assert"));
-function qty2Int(qty) {
+import assert from 'assert';
+export function qty2Int(qty) {
     let i = parseInt(qty, 16);
-    (0, assert_1.default)(Number.isSafeInteger(i));
+    assert(Number.isSafeInteger(i));
     return i;
 }
-function toQty(i) {
+export function toQty(i) {
     return '0x' + i.toString(16);
 }
-function getTxHash(tx) {
+export function getTxHash(tx) {
     if (typeof tx == 'string') {
         return tx;
     }
@@ -24,7 +15,8 @@ function getTxHash(tx) {
         return tx.hash;
     }
 }
-class Graph {
+export class Graph {
+    graph;
     constructor() {
         this.graph = new Map();
     }
@@ -55,5 +47,4 @@ class Graph {
         return stack.reverse();
     }
 }
-exports.Graph = Graph;
 //# sourceMappingURL=util.js.map

@@ -1,16 +1,13 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.Rpc = void 0;
-const logger_1 = require("@subsquid/logger");
-const rpc_client_1 = require("@subsquid/rpc-client");
-const util_internal_ingest_tools_1 = require("@subsquid/util-internal-ingest-tools");
-const util_internal_range_1 = require("@subsquid/util-internal-range");
-const util_internal_validation_1 = require("@subsquid/util-internal-validation");
-const rpc_data_js_1 = require("./rpc-data.js");
-const libauth_1 = require("@bitauth/libauth");
-const lru_cache_1 = require("lru-cache");
-const p2p_cash_1 = require("p2p-cash");
-const util_js_1 = require("./util.js");
+import { createLogger } from '@subsquid/logger';
+import { RpcError } from '@subsquid/rpc-client';
+import { assertIsValid, BlockConsistencyError, trimInvalid } from '@subsquid/util-internal-ingest-tools';
+import { rangeToArray } from '@subsquid/util-internal-range';
+import { DataValidationError, nullable } from '@subsquid/util-internal-validation';
+import { GetBlockNoTransactions, GetBlockWithTransactions, } from './rpc-data.js';
+import { assertSuccess, binToHex, decodeTransaction, encodeCashAddress, hash160, hash256, hexToBin, lockingBytecodeToAddressContents } from '@bitauth/libauth';
+import { LRUCache } from 'lru-cache';
+import { Peer } from 'p2p-cash';
+import { Graph } from './util.js';
 const ZERO_HASH = "00".repeat(32);
 function getResultValidator(validator, transformer) {
     return function (result) {
@@ -19,22 +16,31 @@ function getResultValidator(validator, transformer) {
         }
         let err = validator.validate(result);
         if (err) {
-            throw new util_internal_validation_1.DataValidationError(`server returned unexpected result: ${err.toString()}`);
+            throw new DataValidationError(`server returned unexpected result: ${err.toString()}`);
         }
         else {
             return result;
         }
     };
 }
-const transactionCache = new lru_cache_1.LRUCache({
+const transactionCache = new LRUCache({
     max: 1000,
 });
-const addressCache = new lru_cache_1.LRUCache({
+const addressCache = new LRUCache({
     max: 1000,
 });
 // A composite class to get data from ElectrumX server (tip, historical transactions) and from p2p network layer (blocks, mempool)
 // A variant of this class could be implemented to fetch data from a BCH node's RPC instead of ElectrumX
-class Rpc {
+export class Rpc {
+    client;
+    log;
+    validation;
+    priority;
+    props;
+    p2pEndpoint;
+    p2p;
+    mempoolWatchCancel;
+    newBlocksWatchCancel;
     constructor(client, log, validation = {}, priority = 0, props) {
         this.client = client;
         this.log = log;
@@ -42,11 +48,11 @@ class Rpc {
         this.priority = priority;
         this.props = props ?? {};
         this.p2pEndpoint = this.props.p2pEndpoint ?? '3.142.98.179:8333';
-        this.log = (0, logger_1.createLogger)('sqd:processor:rpc', { rpcUrl: this.client.url, p2pEndpoint: this.p2pEndpoint });
+        this.log = createLogger('sqd:processor:rpc', { rpcUrl: this.client.url, p2pEndpoint: this.p2pEndpoint });
     }
     setupP2P() {
         const [ip, port] = this.p2pEndpoint.split(':');
-        const peer = new p2p_cash_1.Peer({
+        const peer = new Peer({
             ticker: "BCH",
             node: ip,
             port: Number(port),
@@ -148,7 +154,7 @@ class Rpc {
                 hash: ZERO_HASH,
                 height: -1,
             }, rawMempoolHashes[index].toString('hex')));
-            const graph = new util_js_1.Graph();
+            const graph = new Graph();
             for (const tx of transactions) {
                 for (const input of tx.inputs) {
                     graph.addEdge(input.outpointTransactionHash, tx.hash);
@@ -209,12 +215,12 @@ class Rpc {
             height,
             withTransactions ? 1.5 : 1
         ], {
-            validateResult: getResultValidator(withTransactions ? (0, util_internal_validation_1.nullable)(rpc_data_js_1.GetBlockWithTransactions) : (0, util_internal_validation_1.nullable)(rpc_data_js_1.GetBlockNoTransactions), transformBlock(withTransactions))
+            validateResult: getResultValidator(withTransactions ? nullable(GetBlockWithTransactions) : nullable(GetBlockNoTransactions), transformBlock(withTransactions))
         });
     }
     getBlockByHash(hash, withTransactions) {
         return this.call('blockchain.block.get', [hash, withTransactions ? 1.5 : 1], {
-            validateResult: getResultValidator(withTransactions ? (0, util_internal_validation_1.nullable)(rpc_data_js_1.GetBlockWithTransactions) : (0, util_internal_validation_1.nullable)(rpc_data_js_1.GetBlockNoTransactions), transformBlock(withTransactions))
+            validateResult: getResultValidator(withTransactions ? nullable(GetBlockWithTransactions) : nullable(GetBlockNoTransactions), transformBlock(withTransactions))
         });
     }
     getRawTransaction(hash) {
@@ -224,7 +230,7 @@ class Rpc {
         if (transactionCache.has(hash)) {
             return transactionCache.get(hash);
         }
-        const tx = fromLibauthTransaction((0, libauth_1.assertSuccess)((0, libauth_1.decodeTransaction)((0, libauth_1.hexToBin)(await this.getRawTransaction(hash)))));
+        const tx = fromLibauthTransaction(assertSuccess(decodeTransaction(hexToBin(await this.getRawTransaction(hash)))));
         transactionCache.set(hash, tx);
         return tx;
     }
@@ -239,23 +245,23 @@ class Rpc {
     async getColdBlock(blockHash, req, finalizedHeight) {
         let block = await this.getBlockByHash(blockHash, req?.transactions || false).then(toBlock);
         if (block == null)
-            throw new util_internal_ingest_tools_1.BlockConsistencyError({ hash: blockHash });
+            throw new BlockConsistencyError({ hash: blockHash });
         if (req) {
             await this.addRequestedData([block], req, finalizedHeight);
         }
         if (block._isInvalid)
-            throw new util_internal_ingest_tools_1.BlockConsistencyError(block, block._errorMessage);
+            throw new BlockConsistencyError(block, block._errorMessage);
         return block;
     }
     async getColdSplit(req) {
-        let blocks = await this.getColdBlockBatch((0, util_internal_range_1.rangeToArray)(req.range), req.request.transactions ?? false, 1);
+        let blocks = await this.getColdBlockBatch(rangeToArray(req.range), req.request.transactions ?? false, 1);
         return this.addColdRequestedData(blocks, req.request, 1);
     }
     async addColdRequestedData(blocks, req, depth) {
         let result = blocks.map(b => ({ ...b }));
         await this.addRequestedData(result, req);
         if (depth > 9) {
-            (0, util_internal_ingest_tools_1.assertIsValid)(result);
+            assertIsValid(result);
             return result;
         }
         let missing = [];
@@ -283,7 +289,7 @@ class Rpc {
         if (missing.length == 0)
             return result;
         if (depth > 9)
-            throw new util_internal_ingest_tools_1.BlockConsistencyError({
+            throw new BlockConsistencyError({
                 height: numbers[missing[0]]
             }, `failed to get finalized block after ${depth} attempts`);
         let missed = await this.getColdBlockBatch(missing.map(i => numbers[i]), withTransactions, depth + 1);
@@ -293,7 +299,7 @@ class Rpc {
         return result;
     }
     async getHotSplit(req) {
-        let blocks = await this.getBlockBatch((0, util_internal_range_1.rangeToArray)(req.range), req.request.transactions ?? false);
+        let blocks = await this.getBlockBatch(rangeToArray(req.range), req.request.transactions ?? false);
         let chain = [];
         for (let i = 0; i < blocks.length; i++) {
             let block = blocks[i];
@@ -304,7 +310,7 @@ class Rpc {
             chain.push(block);
         }
         await this.addRequestedData(chain, req.request, req.finalizedHeight);
-        return (0, util_internal_ingest_tools_1.trimInvalid)(chain);
+        return trimInvalid(chain);
     }
     async getBlockBatch(numbers, withTransactions) {
         let call = numbers.map(height => {
@@ -314,12 +320,12 @@ class Rpc {
             };
         });
         let blocks = await this.batchCall(call, {
-            validateResult: getResultValidator(withTransactions ? (0, util_internal_validation_1.nullable)(rpc_data_js_1.GetBlockWithTransactions) : (0, util_internal_validation_1.nullable)(rpc_data_js_1.GetBlockNoTransactions), transformBlock(withTransactions)),
+            validateResult: getResultValidator(withTransactions ? nullable(GetBlockWithTransactions) : nullable(GetBlockNoTransactions), transformBlock(withTransactions)),
             validateError: info => {
                 // Avalanche
                 if (/cannot query unfinalized data/i.test(info.message))
                     return null;
-                throw new rpc_client_1.RpcError(info);
+                throw new RpcError(info);
             }
         });
         return blocks.map(toBlock);
@@ -354,7 +360,7 @@ class Rpc {
                 params: [txId, false]
             })));
             rawTxs.map((rawTx, index) => {
-                const tx = fromLibauthTransaction((0, libauth_1.assertSuccess)((0, libauth_1.decodeTransaction)((0, libauth_1.hexToBin)(rawTx))));
+                const tx = fromLibauthTransaction(assertSuccess(decodeTransaction(hexToBin(rawTx))));
                 transactionCache.set(txIdsToFetch[index], tx);
             });
         }
@@ -364,7 +370,7 @@ class Rpc {
                 if (transactionCache.has(txId)) {
                     return;
                 }
-                const tx = fromLibauthTransaction((0, libauth_1.assertSuccess)((0, libauth_1.decodeTransaction)((0, libauth_1.hexToBin)(await this.getRawTransaction(txId)))));
+                const tx = fromLibauthTransaction(assertSuccess(decodeTransaction(hexToBin(await this.getRawTransaction(txId)))));
                 transactionCache.set(txId, tx);
             }));
         }
@@ -381,7 +387,7 @@ class Rpc {
                         params: [txId, false]
                     })));
                     rawTxs.map((rawTx, index) => {
-                        const tx = fromLibauthTransaction((0, libauth_1.assertSuccess)((0, libauth_1.decodeTransaction)((0, libauth_1.hexToBin)(rawTx))));
+                        const tx = fromLibauthTransaction(assertSuccess(decodeTransaction(hexToBin(rawTx))));
                         transactionCache.set(txIdsToFetch[index], tx);
                     });
                     tx.sourceOutputs = await Promise.all(tx.inputs.map(async (input) => {
@@ -423,7 +429,7 @@ class Rpc {
     }
     async getBlockByHeightInternal(blockHeight, verbosity) {
         const { height, hex } = await this.call("blockchain.header.get", [blockHeight]);
-        const hash = (0, libauth_1.binToHex)((0, libauth_1.hash256)((0, libauth_1.hexToBin)(hex)).reverse());
+        const hash = binToHex(hash256(hexToBin(hex)).reverse());
         return await this.getBlockByHashInternal(hash, verbosity, height);
     }
     async getBlockByHeightInternalBatch(blockHeights, verbosities) {
@@ -436,7 +442,7 @@ class Rpc {
             };
         });
         const result = await this.batchCall(batch);
-        return await this.getBlockByHashInternalBatch(result.map(({ hex }) => (0, libauth_1.binToHex)((0, libauth_1.hash256)((0, libauth_1.hexToBin)(hex)).reverse())), verbosities, result.map(({ height }) => height));
+        return await this.getBlockByHashInternalBatch(result.map(({ hex }) => binToHex(hash256(hexToBin(hex)).reverse())), verbosities, result.map(({ height }) => height));
     }
     async getBlockHeightByHashInternal(blockHash) {
         const { height } = await this.call("blockchain.header.get", [blockHash]);
@@ -476,7 +482,7 @@ class Rpc {
             };
             const rawTransactions = block.getRawTransactions();
             if (Number(verbosity === 1)) {
-                result.tx = rawTransactions.map(tx => (0, libauth_1.binToHex)((0, libauth_1.hash256)(tx).reverse()));
+                result.tx = rawTransactions.map(tx => binToHex(hash256(tx).reverse()));
             }
             else {
                 result.tx = rawTransactions.map(tx => tx.toString("hex"));
@@ -496,7 +502,6 @@ class Rpc {
         return await this.mapToRpcBlock(blockHash, block, verbosity, height);
     }
 }
-exports.Rpc = Rpc;
 function toBlock(getBlock) {
     if (getBlock == null)
         return;
@@ -525,18 +530,18 @@ const fromLibauthTransaction = (tx) => {
         ...tx,
         inputs: tx.inputs.map(input => ({
             ...input,
-            outpointTransactionHash: (0, libauth_1.binToHex)(input.outpointTransactionHash),
-            unlockingBytecode: (0, libauth_1.binToHex)(input.unlockingBytecode),
+            outpointTransactionHash: binToHex(input.outpointTransactionHash),
+            unlockingBytecode: binToHex(input.unlockingBytecode),
         })),
         outputs: tx.outputs.map(output => ({
             ...output,
             address: getAddress(output.lockingBytecode),
-            lockingBytecode: (0, libauth_1.binToHex)(output.lockingBytecode),
+            lockingBytecode: binToHex(output.lockingBytecode),
             token: output.token ? {
-                category: (0, libauth_1.binToHex)(output.token.category),
+                category: binToHex(output.token.category),
                 amount: output.token.amount,
                 nft: output.token.nft ? {
-                    commitment: (0, libauth_1.binToHex)(output.token.nft.commitment),
+                    commitment: binToHex(output.token.nft.commitment),
                     capability: output.token.nft.capability,
                 } : undefined,
             } : undefined,
@@ -547,19 +552,19 @@ const getAddress = (lockingBytecode) => {
     if (addressCache.has(lockingBytecode)) {
         return addressCache.get(lockingBytecode);
     }
-    const contents = (0, libauth_1.lockingBytecodeToAddressContents)(lockingBytecode);
-    const encodeResult = (0, libauth_1.encodeCashAddress)({
+    const contents = lockingBytecodeToAddressContents(lockingBytecode);
+    const encodeResult = encodeCashAddress({
         prefix: process.env.BCH_PREFIX,
         type: contents.type.toLowerCase(),
-        payload: contents.type === 'P2PK' ? (0, libauth_1.hash160)(contents.payload) : contents.payload,
+        payload: contents.type === 'P2PK' ? hash160(contents.payload) : contents.payload,
         throwErrors: false
     });
-    return typeof encodeResult === "string" ? (0, libauth_1.binToHex)(contents.payload) : encodeResult.address;
+    return typeof encodeResult === "string" ? binToHex(contents.payload) : encodeResult.address;
 };
 const transformTransaction = (txHexOrBin, txIndex, rpcBlock, txHash) => {
-    const rawTx = typeof txHexOrBin === "string" ? (0, libauth_1.hexToBin)(txHexOrBin) : txHexOrBin;
-    const tx = fromLibauthTransaction((0, libauth_1.assertSuccess)((0, libauth_1.decodeTransaction)(rawTx)));
-    txHash ?? (txHash = (0, libauth_1.binToHex)((0, libauth_1.hash256)(rawTx).reverse()));
+    const rawTx = typeof txHexOrBin === "string" ? hexToBin(txHexOrBin) : txHexOrBin;
+    const tx = fromLibauthTransaction(assertSuccess(decodeTransaction(rawTx)));
+    txHash ??= binToHex(hash256(rawTx).reverse());
     transactionCache.set(txHash, tx);
     return {
         hash: txHash,

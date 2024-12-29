@@ -1,8 +1,5 @@
-"use strict";
-Object.defineProperty(exports, "__esModule", { value: true });
-exports.GetBlockNoTransactions = exports.GetBlockWithTransactions = exports.BIGINT = exports.HEX = exports.ValidationFailureEx = void 0;
-const util_internal_validation_1 = require("@subsquid/util-internal-validation");
-class ValidationFailureEx extends util_internal_validation_1.ValidationFailure {
+import { array, NAT, object, option, STRING, ValidationFailure } from '@subsquid/util-internal-validation';
+export class ValidationFailureEx extends ValidationFailure {
     toString() {
         let msg = this.message;
         if (msg.includes('{value}')) {
@@ -14,14 +11,13 @@ class ValidationFailureEx extends util_internal_validation_1.ValidationFailure {
         return msg;
     }
 }
-exports.ValidationFailureEx = ValidationFailureEx;
 function isHex(value) {
     return typeof value == 'string' && /^[0-9a-fA-F]*$/.test(value);
 }
 /**
  * Hex encoded binary string without 0x prefix
  */
-exports.HEX = {
+export const HEX = {
     cast(value) {
         return this.validate(value) || value.toLowerCase();
     },
@@ -40,7 +36,7 @@ function isBigint(value) {
 /**
  * Hex encoded binary string without 0x prefix
  */
-exports.BIGINT = {
+export const BIGINT = {
     cast(value) {
         return this.validate(value) || value;
     },
@@ -53,66 +49,66 @@ exports.BIGINT = {
         return 0n;
     }
 };
-const Transaction = (0, util_internal_validation_1.object)({
-    blockNumber: util_internal_validation_1.NAT,
-    blockHash: exports.HEX,
-    transactionIndex: util_internal_validation_1.NAT,
-    size: util_internal_validation_1.NAT,
-    hash: exports.HEX,
-    sourceOutputs: (0, util_internal_validation_1.option)((0, util_internal_validation_1.array)((0, util_internal_validation_1.object)({
-        lockingBytecode: exports.HEX,
-        token: (0, util_internal_validation_1.option)((0, util_internal_validation_1.object)({
-            amount: exports.BIGINT,
-            category: exports.HEX,
-            nft: (0, util_internal_validation_1.option)((0, util_internal_validation_1.object)({
-                capability: util_internal_validation_1.STRING,
-                commitment: exports.HEX,
+const Transaction = object({
+    blockNumber: NAT,
+    blockHash: HEX,
+    transactionIndex: NAT,
+    size: NAT,
+    hash: HEX,
+    sourceOutputs: option(array(object({
+        lockingBytecode: HEX,
+        token: option(object({
+            amount: BIGINT,
+            category: HEX,
+            nft: option(object({
+                capability: STRING,
+                commitment: HEX,
             })),
         })),
-        valueSatoshis: exports.BIGINT,
-        address: util_internal_validation_1.STRING,
+        valueSatoshis: BIGINT,
+        address: STRING,
     }))),
-    inputs: (0, util_internal_validation_1.array)((0, util_internal_validation_1.object)({
-        outpointIndex: util_internal_validation_1.NAT,
-        outpointTransactionHash: exports.HEX,
-        sequenceNumber: util_internal_validation_1.NAT,
-        unlockingBytecode: exports.HEX,
+    inputs: array(object({
+        outpointIndex: NAT,
+        outpointTransactionHash: HEX,
+        sequenceNumber: NAT,
+        unlockingBytecode: HEX,
     })),
-    outputs: (0, util_internal_validation_1.array)((0, util_internal_validation_1.object)({
-        lockingBytecode: exports.HEX,
-        token: (0, util_internal_validation_1.option)((0, util_internal_validation_1.object)({
-            amount: exports.BIGINT,
-            category: exports.HEX,
-            nft: (0, util_internal_validation_1.option)((0, util_internal_validation_1.object)({
-                capability: util_internal_validation_1.STRING,
-                commitment: exports.HEX,
+    outputs: array(object({
+        lockingBytecode: HEX,
+        token: option(object({
+            amount: BIGINT,
+            category: HEX,
+            nft: option(object({
+                capability: STRING,
+                commitment: HEX,
             })),
         })),
-        valueSatoshis: exports.BIGINT,
-        address: util_internal_validation_1.STRING,
+        valueSatoshis: BIGINT,
+        address: STRING,
     })),
-    locktime: util_internal_validation_1.NAT,
-    version: util_internal_validation_1.NAT,
-    fee: (0, util_internal_validation_1.option)(util_internal_validation_1.NAT),
+    locktime: NAT,
+    version: NAT,
+    fee: option(NAT),
 });
-exports.GetBlockWithTransactions = (0, util_internal_validation_1.object)({
-    height: util_internal_validation_1.NAT,
-    hash: exports.HEX,
-    parentHash: exports.HEX,
-    transactions: (0, util_internal_validation_1.array)(Transaction),
-    difficulty: util_internal_validation_1.NAT,
-    size: util_internal_validation_1.NAT,
-    timestamp: util_internal_validation_1.NAT,
-    nonce: util_internal_validation_1.NAT,
+export const GetBlockWithTransactions = object({
+    height: NAT,
+    hash: HEX,
+    parentHash: HEX,
+    transactions: array(Transaction),
+    difficulty: NAT,
+    size: NAT,
+    timestamp: NAT,
+    nonce: NAT,
 });
-exports.GetBlockNoTransactions = (0, util_internal_validation_1.object)({
-    height: util_internal_validation_1.NAT,
-    hash: exports.HEX,
-    parentHash: exports.HEX,
-    transactions: (0, util_internal_validation_1.array)(exports.HEX),
-    difficulty: util_internal_validation_1.NAT,
-    size: util_internal_validation_1.NAT,
-    timestamp: util_internal_validation_1.NAT,
-    nonce: util_internal_validation_1.NAT,
+export const GetBlockNoTransactions = object({
+    height: NAT,
+    hash: HEX,
+    parentHash: HEX,
+    transactions: array(HEX),
+    difficulty: NAT,
+    size: NAT,
+    timestamp: NAT,
+    nonce: NAT,
 });
 //# sourceMappingURL=rpc-data.js.map
