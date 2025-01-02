@@ -13,7 +13,7 @@ import {
     RpcBlock,
     Transaction,
 } from './rpc-data.js'
-import { assertSuccess, binToHex, CashAddressNetworkPrefix, CashAddressType, decodeTransaction, encodeCashAddress, hash160, hash256, hexToBin, Input, lockingBytecodeToAddressContents, Output, TransactionCommon } from '@bitauth/libauth'
+import { assertSuccess, binToHex, CashAddressNetworkPrefix, CashAddressType, decodeTransaction, encodeCashAddress, hash160, hash256, hexToBin, Input, lockingBytecodeToAddressContents, Output, sha256, TransactionCommon } from '@bitauth/libauth'
 import { LRUCache } from 'lru-cache'
 import { Peer } from 'p2p-cash'
 import { Block as P2pBlock } from 'bitcoin-minimal'
@@ -691,20 +691,27 @@ const fromLibauthTransaction = (tx: TransactionCommon): TransactionBCHWithAddres
     }
 }
 
-const getAddress = (lockingBytecode: Uint8Array): string => {
+export const getAddress = (lockingBytecode: Uint8Array): string => {
     if (addressCache.has(lockingBytecode)) {
         return addressCache.get(lockingBytecode)!
     }
 
     const contents = lockingBytecodeToAddressContents(lockingBytecode)
 
-    const encodeResult = encodeCashAddress({
-        prefix: process.env.BCH_PREFIX as CashAddressNetworkPrefix,
-        type: contents.type.toLowerCase() as CashAddressType,
-        payload: contents.type === 'P2PK' ? hash160(contents.payload) : contents.payload,
-        throwErrors: false
-    })
-    return typeof encodeResult === "string" ? binToHex(contents.payload) : encodeResult.address
+    if (contents.type !== 'unknown') {
+        const encodeResult = encodeCashAddress({
+            prefix: process.env.BCH_PREFIX as CashAddressNetworkPrefix,
+            type: contents.type.toLowerCase() as CashAddressType,
+            payload: contents.type === 'P2PK' ? hash160(contents.payload) : contents.payload,
+            throwErrors: false
+        })
+
+        if (typeof encodeResult !== "string") {
+            return encodeResult.address
+        }
+    }
+
+    return `script-${binToHex(sha256.hash(lockingBytecode).slice(0, 16))}`
 }
 
 const transformTransaction = (txHexOrBin: string | Uint8Array, txIndex: number, rpcBlock: RpcBlock, txHash?: string): Transaction => {
