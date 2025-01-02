@@ -4,7 +4,7 @@ import { assertIsValid, BlockConsistencyError, trimInvalid } from '@subsquid/uti
 import { rangeToArray } from '@subsquid/util-internal-range';
 import { DataValidationError, nullable } from '@subsquid/util-internal-validation';
 import { GetBlockNoTransactions, GetBlockWithTransactions, } from './rpc-data.js';
-import { assertSuccess, binToHex, decodeTransaction, encodeCashAddress, hash160, hash256, hexToBin, lockingBytecodeToAddressContents } from '@bitauth/libauth';
+import { assertSuccess, binToHex, decodeTransaction, encodeCashAddress, hash160, hash256, hexToBin, lockingBytecodeToAddressContents, sha256 } from '@bitauth/libauth';
 import { LRUCache } from 'lru-cache';
 import { Peer } from 'p2p-cash';
 import { Graph } from './util.js';
@@ -548,18 +548,23 @@ const fromLibauthTransaction = (tx) => {
         }))
     };
 };
-const getAddress = (lockingBytecode) => {
+export const getAddress = (lockingBytecode) => {
     if (addressCache.has(lockingBytecode)) {
         return addressCache.get(lockingBytecode);
     }
     const contents = lockingBytecodeToAddressContents(lockingBytecode);
-    const encodeResult = encodeCashAddress({
-        prefix: process.env.BCH_PREFIX,
-        type: contents.type.toLowerCase(),
-        payload: contents.type === 'P2PK' ? hash160(contents.payload) : contents.payload,
-        throwErrors: false
-    });
-    return typeof encodeResult === "string" ? binToHex(contents.payload) : encodeResult.address;
+    if (contents.type !== 'unknown') {
+        const encodeResult = encodeCashAddress({
+            prefix: process.env.BCH_PREFIX,
+            type: contents.type.toLowerCase(),
+            payload: contents.type === 'P2PK' ? hash160(contents.payload) : contents.payload,
+            throwErrors: false
+        });
+        if (typeof encodeResult !== "string") {
+            return encodeResult.address;
+        }
+    }
+    return `script-${binToHex(sha256.hash(lockingBytecode).slice(0, 16))}`;
 };
 const transformTransaction = (txHexOrBin, txIndex, rpcBlock, txHash) => {
     const rawTx = typeof txHexOrBin === "string" ? hexToBin(txHexOrBin) : txHexOrBin;

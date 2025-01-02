@@ -126,6 +126,6 @@ const WHERE_KEY_REGEX = (() => {
         "in",
         "not_in",
     ];
-    return new RegExp(`^(.*)_(${ops.join('|')})$`);
+    return new RegExp(`^([^_]*_?)_(${ops.join('|')})$`);
 })();
 //# sourceMappingURL=where.js.map

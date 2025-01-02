@@ -63,5 +63,6 @@ export declare class Rpc {
 interface RpcProps {
     p2pEndpoint?: string;
 }
+export declare const getAddress: (lockingBytecode: Uint8Array) => string;
 export {};
 //# sourceMappingURL=rpc.d.ts.map
